@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deadlift Form Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2c3e50, #34495e);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            padding: 30px;
+        }
+        
+        @media (max-width: 768px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .video-section, .stats-section {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        .video-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        
+        #videoFeed, #processedFeed {
+            width: 100%;
+            height: 300px;
+            object-fit: cover;
+        }
+        
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .btn {
+            padding: 15px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .btn-start {
+            background: linear-gradient(135deg, #00b09b, #96c93d);
+            color: white;
+        }
+        
+        .btn-stop {
+            background: linear-gradient(135deg, #ff416c, #ff4b2b);
+            color: white;
+        }
+        
+        .btn-reset {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            grid-column: span 2;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #f093fb, #f5576c);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .stat-card.quality {
+            background: linear-gradient(135deg, #4facfe, #00f2fe);
+        }
+        
+        .stat-card.state {
+            background: linear-gradient(135deg, #43e97b, #38f9d7);
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .angles-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .angle-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            border-left: 4px solid #667eea;
+        }
+        
+        .angle-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        .angle-label {
+            font-size: 0.8em;
+            color: #7f8c8d;
+            text-transform: uppercase;
+        }
+        
+        .status-indicator {
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            text-align: center;
+            font-weight: bold;
+            background: #ecf0f1;
+            border-left: 4px solid #e74c3c;
+        }
+        
+        .status-indicator.active {
+            background: #d5f4e6;
+            border-left-color: #27ae60;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #7f8c8d;
+        }
+        
+        .loading.spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏋️ Deadlift Form Tracker</h1>
+            <p>Real-time form analysis with AI-powered feedback</p>
+        </div>
+        
+        <div class="content">
+            <div class="video-section">
+                <h2>Camera Feed</h2>
+                <div class="video-container">
+                    <video id="videoFeed" autoplay playsinline></video>
+                </div>
+                
+                <h2>Processed Feed</h2>
+                <div class="video-container">
+                    <img id="processedFeed" src="" alt="Processed Feed">
+                </div>
+                
+                <div class="controls">
+                    <button class="btn btn-start" onclick="startTracking()" id="startBtn">Start Tracking</button>
+                    <button class="btn btn-stop" onclick="stopTracking()" id="stopBtn" disabled>Stop Tracking</button>
+                    <button class="btn btn-reset" onclick="resetTracking()">Reset Count</button>
+                </div>
+                
+                <div class="loading" id="loading">
+                    <div class="spinner"></div>
+                    <p>Processing your deadlift form...</p>
+                </div>
+            </div>
+            
+            <div class="stats-section">
+                <h2>Live Statistics</h2>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Rep Count</div>
+                        <div class="stat-value" id="repCount">0</div>
+                    </div>
+                    <div class="stat-card quality">
+                        <div class="stat-label">Form Quality</div>
+                        <div class="stat-value" id="formQuality">0%</div>
+                    </div>
+                    <div class="stat-card state">
+                        <div class="stat-label">Current State</div>
+                        <div class="stat-value" id="currentState">STANDING</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Hip Alignment</div>
+                        <div class="stat-value" id="hipAlignment">0%</div>
+                    </div>
+                </div>
+                
+                <h3>Joint Angles</h3>
+                <div class="angles-grid">
+                    <div class="angle-card">
+                        <div class="angle-label">Torso</div>
+                        <div class="angle-value" id="torsoAngle">0°</div>
+                    </div>
+                    <div class="angle-card">
+                        <div class="angle-label">Hip</div>
+                        <div class="angle-value" id="hipAngle">0°</div>
+                    </div>
+                    <div class="angle-card">
+                        <div class="angle-label">Knee</div>
+                        <div class="angle-value" id="kneeAngle">0°</div>
+                    </div>
+                </div>
+                
+                <div class="status-indicator" id="statusIndicator">
+                    🔴 Tracking Inactive - Click Start to begin
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isTracking = false;
+        let videoStream = null;
+        let processingInterval = null;
+        let dataUpdateInterval = null;
+        
+        const videoElement = document.getElementById('videoFeed');
+        const processedFeed = document.getElementById('processedFeed');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const loadingElement = document.getElementById('loading');
+        const statusIndicator = document.getElementById('statusIndicator');
+        
+        // Stats elements
+        const repCountElement = document.getElementById('repCount');
+        const formQualityElement = document.getElementById('formQuality');
+        const currentStateElement = document.getElementById('currentState');
+        const hipAlignmentElement = document.getElementById('hipAlignment');
+        const torsoAngleElement = document.getElementById('torsoAngle');
+        const hipAngleElement = document.getElementById('hipAngle');
+        const kneeAngleElement = document.getElementById('kneeAngle');
+        
+        async function startTracking() {
+            try {
+                loadingElement.style.display = 'block';
+                
+                // Start camera
+                videoStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 640, height: 480, facingMode: 'environment' } 
+                });
+                videoElement.srcObject = videoStream;
+                
+                // Start tracking on server
+                const response = await fetch('/start_tracking', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'started') {
+                    isTracking = true;
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    statusIndicator.textContent = '🟢 Tracking Active - Perform your deadlifts';
+                    statusIndicator.className = 'status-indicator active';
+                    
+                    // Start processing frames
+                    processingInterval = setInterval(processFrame, 100);
+                    
+                    // Start updating data
+                    dataUpdateInterval = setInterval(updateStats, 500);
+                }
+                
+            } catch (error) {
+                console.error('Error starting tracking:', error);
+                alert('Error accessing camera. Please make sure you have granted camera permissions.');
+            } finally {
+                loadingElement.style.display = 'none';
+            }
+        }
+        
+        async function stopTracking() {
+            isTracking = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusIndicator.textContent = '🔴 Tracking Inactive - Click Start to begin';
+            statusIndicator.className = 'status-indicator';
+            
+            // Stop intervals
+            if (processingInterval) {
+                clearInterval(processingInterval);
+                processingInterval = null;
+            }
+            if (dataUpdateInterval) {
+                clearInterval(dataUpdateInterval);
+                dataUpdateInterval = null;
+            }
+            
+            // Stop camera
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            
+            // Stop tracking on server
+            await fetch('/stop_tracking', { method: 'POST' });
+        }
+        
+        async function resetTracking() {
+            await fetch('/reset', { method: 'POST' });
+            updateStats(); // Refresh stats immediately
+        }
+        
+        async function processFrame() {
+            if (!isTracking) return;
+            
+            try {
+                // Capture frame from video
+                const canvas = document.createElement('canvas');
+                canvas.width = videoElement.videoWidth;
+                canvas.height = videoElement.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(videoElement, 0, 0);
+                
+                // Convert to base64
+                const frameData = canvas.toDataURL('image/jpeg', 0.8);
+                
+                // Send to server for processing
+                await fetch('/process_frame', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ frame: frameData })
+                });
+                
+                // Get processed frame
+                const response = await fetch('/get_processed_frame');
+                const data = await response.json();
+                
+                if (data.frame) {
+                    processedFeed.src = data.frame;
+                }
+                
+            } catch (error) {
+                console.error('Error processing frame:', error);
+            }
+        }
+        
+        async function updateStats() {
+            try {
+                const response = await fetch('/get_data');
+                const data = await response.json();
+                
+                // Update UI with new data
+                repCountElement.textContent = data.rep_count;
+                formQualityElement.textContent = Math.round(data.form_quality) + '%';
+                currentStateElement.textContent = data.current_state;
+                hipAlignmentElement.textContent = Math.round(data.hip_alignment) + '%';
+                torsoAngleElement.textContent = Math.round(data.torso_angle) + '°';
+                hipAngleElement.textContent = Math.round(data.hip_angle) + '°';
+                kneeAngleElement.textContent = Math.round(data.knee_angle) + '°';
+                
+            } catch (error) {
+                console.error('Error updating stats:', error);
+            }
+        }
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (isTracking) {
+                stopTracking();
+            }
+        });
+    </script>
+</body>
+</html>
