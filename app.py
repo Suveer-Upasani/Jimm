@@ -268,7 +268,7 @@ def angle_with_vertical(dx, dy):
         cos_a = max(min(dot / mag_v, 1), -1)
         return math.degrees(math.acos(cos_a))
     except:
-    return 0.0
+        return 0.0  # Fixed indentation here
 
 def angle_between_points(a, b, c):
     try:
