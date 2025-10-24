@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation - Deadlift Analysis</title>
+    <style>
+        /* Same base styles as index.html */
+        .endpoint {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        .method {
+            display: inline-block;
+            padding: 5px 15px;
+            background: #667eea;
+            color: white;
+            border-radius: 5px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .method.get { background: #48bb78; }
+        .method.post { background: #ed8936; }
+        .url {
+            background: #f7fafc;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 API Documentation</h1>
+            <p>Complete guide to integrating with our Deadlift Analysis API</p>
+        </div>
+
+        <div class="nav">
+            <a href="/" class="nav-btn">Home</a>
+            <a href="/dashboard" class="nav-btn">Dashboard</a>
+            <a href="/api" class="nav-btn active">API Docs</a>
+        </div>
+
+        <div class="endpoint">
+            <h2><span class="method post">POST</span> /api/process_frame</h2>
+            <p>Process an image frame for deadlift analysis and return pose detection results with annotated image.</p>
+            
+            <div class="url">https://jimm.onrender.com/api/process_frame</div>
+
+            <h3>Request Body</h3>
+            <div class="code-block">
+{
+    "frame": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k="
+}
+            </div>
+
+            <h3>Response</h3>
+            <div class="code-block">
+{
+    "pose_detected": true,
+    "reps": 5,
+    "state": "ASCENDING",
+    "form_quality": 85.5,
+    "spinal_load": 125.3,
+    "confidence": 0.92,
+    "annotated_frame": "data:image/jpeg;base64,...",
+    "processing_time": 0.45,
+    "timestamp": 1635724800.123456
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h2><span class="method get">GET</span> /api/health</h2>
+            <p>Check the health status of the API service.</p>
+            <div class="url">https://jimm.onrender.com/api/health</div>
+
+            <h3>Response</h3>
+            <div class="code-block">
+{
+    "status": "healthy",
+    "timestamp": 1635724800.123456,
+    "frames_processed": 150,
+    "total_reps": 5,
+    "current_state": "ASCENDING"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h2><span class="method post">POST</span> /api/reset</h2>
+            <p>Reset the analysis counters and history.</p>
+            <div class="url">https://jimm.onrender.com/api/reset</div>
+
+            <h3>Response</h3>
+            <div class="code-block">
+{
+    "message": "Analysis reset successfully",
+    "timestamp": 1635724800.123456
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h2><span class="method get">GET</span> /api/stats</h2>
+            <p>Get current analysis statistics.</p>
+            <div class="url">https://jimm.onrender.com/api/stats</div>
+
+            <h3>Response</h3>
+            <div class="code-block">
+{
+    "total_frames": 150,
+    "total_reps": 5,
+    "current_state": "ASCENDING",
+    "session_duration": 3600.5
+}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
