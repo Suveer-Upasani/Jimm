@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y \
     libharfbuzz0b \
     libopenblas0 \
     libgomp1 \
-    curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -41,5 +40,5 @@ EXPOSE 5005
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5005/api/health || exit 1
 
-# Run with Gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:5005", "--workers", "4", "--threads", "2", "app:app"]
+# Run the application
+CMD ["python", "app.py"]
