@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Deadlift Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* Same styles as index.html, adding chart-specific styles */
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        .chart-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 768px) {
+            .chart-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Analysis Dashboard</h1>
+            <p>Comprehensive overview of deadlift analysis performance</p>
+        </div>
+
+        <div class="nav">
+            <a href="/" class="nav-btn">Home</a>
+            <a href="/dashboard" class="nav-btn active">Dashboard</a>
+            <a href="/api" class="nav-btn">API Docs</a>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Reps</h3>
+                <div class="stat-value">{{ stats.total_reps }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Frames Processed</h3>
+                <div class="stat-value">{{ stats.total_frames }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Session Duration</h3>
+                <div class="stat-value">{{ "%.1f"|format(stats.session_duration) }}s</div>
+            </div>
+            <div class="stat-card">
+                <h3>Current State</h3>
+                <div class="stat-value">{{ stats.current_state }}</div>
+            </div>
+        </div>
+
+        <div class="chart-row">
+            <div class="chart-container">
+                <h3>Form Quality Over Time</h3>
+                <canvas id="formQualityChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3>Spinal Load Distribution</h3>
+                <canvas id="spinalLoadChart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h3>Recent Analysis History</h3>
+            <div id="recentAnalysis">
+                {% for analysis in recent_analysis %}
+                <div class="result-item">
+                    <span>Frame {{ analysis.frame_count }}:</span>
+                    <span>{{ analysis.state }} ({{ "%.1f"|format(analysis.form_quality) }}%)</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Sample chart data - in a real app, you'd fetch this from your API
+        const formQualityCtx = document.getElementById('formQualityChart').getContext('2d');
+        const spinalLoadCtx = document.getElementById('spinalLoadChart').getContext('2d');
+
+        new Chart(formQualityCtx, {
+            type: 'line',
+            data: {
+                labels: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'],
+                datasets: [{
+                    label: 'Form Quality (%)',
+                    data: [85, 82, 88, 75, 90, 85, 78, 92, 88, 85],
+                    borderColor: '#48bb78',
+                    backgroundColor: 'rgba(72, 187, 120, 0.1)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        new Chart(spinalLoadCtx, {
+            type: 'bar',
+            data: {
+                labels: ['Low', 'Medium', 'High'],
+                datasets: [{
+                    label: 'Spinal Load Distribution',
+                    data: [12, 19, 3],
+                    backgroundColor: ['#48bb78', '#ed8936', '#f56565']
+                }]
+            },
+            options: {
+                responsive: true
+            }
+        });
+    </script>
+</body>
+</html>
