@@ -5,373 +5,857 @@ import time
 import math
 import base64
 import json
+import asyncio
 import logging
 import os
-from flask import Flask, request, jsonify, render_template, Response
+from flask import Flask, Response, jsonify, request, render_template
+from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from collections import deque
+import threading
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc.contrib.media import MediaBlackhole, MediaRecorder
+from av import VideoFrame
+import uuid
 
-# Configure logging
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Force CPU usage
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # Initialize MediaPipe
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key-here'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 CORS(app)
 
-class DeadliftAnalysis:
+# Store active connections
+active_connections = {}
+
+# Pose settings
+pose_settings = {
+    'min_detection_confidence': 0.5,
+    'min_tracking_confidence': 0.5,
+    'model_complexity': 1
+}
+
+def create_pose_instance():
+    """Create a fresh MediaPipe Pose instance"""
+    return mp_pose.Pose(
+        min_detection_confidence=pose_settings['min_detection_confidence'],
+        min_tracking_confidence=pose_settings['min_tracking_confidence'],
+        model_complexity=pose_settings['model_complexity']
+    )
+
+class PoseStabilityFilter:
+    """Filter to smooth pose landmarks and reduce jitter"""
+    def __init__(self, window_size=5):
+        self.window_size = window_size
+        self.landmark_history = deque(maxlen=window_size)
+
+    def smooth_landmarks(self, landmarks):
+        """Apply smoothing filter to reduce jitter"""
+        if not landmarks:
+            return landmarks
+
+        self.landmark_history.append(landmarks)
+
+        if len(self.landmark_history) < 2:
+            return landmarks
+
+        smoothed = []
+        for i in range(len(landmarks)):
+            avg_x = sum(frame[i].x for frame in self.landmark_history) / len(self.landmark_history)
+            avg_y = sum(frame[i].y for frame in self.landmark_history) / len(self.landmark_history)
+            avg_z = sum(frame[i].z for frame in self.landmark_history) / len(self.landmark_history)
+            avg_vis = sum(frame[i].visibility for frame in self.landmark_history) / len(self.landmark_history)
+
+            new_lm = type(landmarks[0])()
+            new_lm.x = avg_x
+            new_lm.y = avg_y
+            new_lm.z = avg_z
+            new_lm.visibility = avg_vis
+            smoothed.append(new_lm)
+
+        return smoothed
+
+class AdvancedBiomechanicalAnalyzer:
+    """Enhanced biomechanical analysis with joint angles and forces"""
     def __init__(self):
-        self.pose = mp_pose.Pose(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-            model_complexity=1,
-            static_image_mode=False
-        )
-        self.rep_detector = DeadliftRepDetector()
-        self.last_analysis_time = time.time()
-        self.frame_count = 0
-        self.analysis_history = deque(maxlen=100)
+        self.body_weight = 75
+        self.barbell_weight = 60
 
-    def process_frame(self, frame):
+    def calculate_joint_angles(self, landmarks, width, height):
+        """Calculate all relevant joint angles with error checking"""
         try:
-            self.frame_count += 1
-            
-            # Resize for consistent processing
-            frame = cv2.resize(frame, (640, 480))
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Process with MediaPipe
-            pose_results = self.pose.process(rgb_frame)
-            
-            analysis_result = {
-                'pose_detected': False,
-                'reps': self.rep_detector.rep_count,
-                'state': self.rep_detector.state,
-                'form_quality': 0.0,
-                'spinal_load': 0.0,
-                'confidence': 0.0,
-                'landmarks': [],
-                'timestamp': time.time(),
-                'frame_count': self.frame_count
+            def safe_convert(lm):
+                if lm.visibility < 0.5:
+                    return None
+                return (lm.x * width, lm.y * height)
+
+            shoulder = safe_convert(landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value])
+            hip = safe_convert(landmarks[mp_pose.PoseLandmark.LEFT_HIP.value])
+            knee = safe_convert(landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value])
+            ankle = safe_convert(landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value])
+
+            if not all([shoulder, hip, knee, ankle]):
+                return {}
+
+            back_angle = self.angle_between_points(shoulder, hip, (hip[0], hip[1] - 100))
+            hip_angle = self.angle_between_points(shoulder, hip, knee)
+            knee_angle = self.angle_between_points(hip, knee, ankle)
+            shin_angle = self.angle_between_points(hip, knee, (knee[0], knee[1] + 100))
+
+            return {
+                'back_angle': back_angle,
+                'hip_angle': hip_angle,
+                'knee_angle': knee_angle,
+                'shin_angle': shin_angle
             }
-            
-            annotated_frame = frame.copy()
-            
-            if pose_results.pose_landmarks:
-                analysis_result['pose_detected'] = True
-                landmarks = pose_results.pose_landmarks.landmark
-                
-                # Draw pose landmarks
-                mp_drawing.draw_landmarks(
-                    annotated_frame,
-                    pose_results.pose_landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2)
-                )
-                
-                # Extract key landmarks
-                key_points = {}
-                for landmark in [mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE,
-                               mp_pose.PoseLandmark.RIGHT_ANKLE, mp_pose.PoseLandmark.RIGHT_SHOULDER,
-                               mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE,
-                               mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.LEFT_SHOULDER]:
-                    lm = landmarks[landmark.value]
-                    key_points[landmark.name] = {
-                        'x': lm.x, 
-                        'y': lm.y, 
-                        'z': lm.z, 
-                        'visibility': lm.visibility
-                    }
-                
-                analysis_result['landmarks'] = key_points
-                
-                # Calculate metrics
-                if (mp_pose.PoseLandmark.RIGHT_HIP.name in key_points and 
-                    mp_pose.PoseLandmark.RIGHT_SHOULDER.name in key_points):
-                    
-                    hip = key_points[mp_pose.PoseLandmark.RIGHT_HIP.name]
-                    shoulder = key_points[mp_pose.PoseLandmark.RIGHT_SHOULDER.name]
-                    knee = key_points.get(mp_pose.PoseLandmark.RIGHT_KNEE.name, {})
-                    ankle = key_points.get(mp_pose.PoseLandmark.RIGHT_ANKLE.name, {})
-                    
-                    # Calculate angles
-                    torso_angle = self.calculate_torso_angle(hip, shoulder)
-                    hip_angle = self.calculate_hip_angle(hip, shoulder, knee)
-                    knee_angle = self.calculate_knee_angle(hip, knee, ankle)
-                    
-                    # Update rep detector
-                    rep_completed, current_state = self.rep_detector.update(
-                        hip['y'], torso_angle, hip_angle, knee_angle
-                    )
-                    
-                    analysis_result['state'] = current_state
-                    analysis_result['reps'] = self.rep_detector.rep_count
-                    
-                    # Calculate form quality
-                    form_quality = self.calculate_form_quality(hip, shoulder, knee, ankle)
-                    analysis_result['form_quality'] = form_quality
-                    
-                    # Calculate spinal load
-                    spinal_load = self.calculate_spinal_load(hip, shoulder)
-                    analysis_result['spinal_load'] = spinal_load
-                    
-                    # Calculate confidence from landmark visibility
-                    visibility_scores = [
-                        hip.get('visibility', 0),
-                        shoulder.get('visibility', 0),
-                        knee.get('visibility', 0),
-                        ankle.get('visibility', 0)
-                    ]
-                    analysis_result['confidence'] = np.mean(visibility_scores)
-                    
-                    # Add analysis text to annotated frame
-                    self.add_analysis_text(annotated_frame, analysis_result)
-            
-            # Encode annotated frame
-            _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            annotated_frame_base64 = base64.b64encode(buffer).decode('utf-8')
-            analysis_result['annotated_frame'] = f"data:image/jpeg;base64,{annotated_frame_base64}"
-            
-            # Store in history
-            self.analysis_history.append(analysis_result)
-            
-            return analysis_result
-            
         except Exception as e:
-            logger.error(f"Error processing frame: {e}")
-            return None
-    
-    def calculate_torso_angle(self, hip, shoulder):
-        try:
-            dx = shoulder['x'] - hip['x']
-            dy = shoulder['y'] - hip['y']
-            return angle_with_vertical(dx, dy)
-        except:
-            return 0.0
-    
-    def calculate_hip_angle(self, hip, shoulder, knee):
-        try:
-            if 'x' not in knee:
-                return 0.0
-            a = np.array([shoulder['x'], shoulder['y']])
-            b = np.array([hip['x'], hip['y']])
-            c = np.array([knee['x'], knee['y']])
-            return angle_between_points(a, b, c)
-        except:
-            return 0.0
-    
-    def calculate_knee_angle(self, hip, knee, ankle):
-        try:
-            if 'x' not in ankle:
-                return 0.0
-            a = np.array([hip['x'], hip['y']])
-            b = np.array([knee['x'], knee['y']])
-            c = np.array([ankle['x'], ankle['y']])
-            return angle_between_points(a, b, c)
-        except:
-            return 0.0
-    
-    def calculate_form_quality(self, hip, shoulder, knee, ankle):
-        try:
-            # Simplified form quality calculation
-            quality = 80.0  # Base quality
-            
-            # Adjust based on torso angle (ideal: 40-60 degrees)
-            torso_angle = self.calculate_torso_angle(hip, shoulder)
-            if 40 <= torso_angle <= 60:
-                quality += 10
-            else:
-                quality -= abs(torso_angle - 50) * 0.5
-            
-            return max(0, min(100, quality))
-        except:
-            return 50.0
-    
-    def calculate_spinal_load(self, hip, shoulder):
-        try:
-            torso_angle = self.calculate_torso_angle(hip, shoulder)
-            barbell_weight = 60  # kg
-            return barbell_weight * (1 + abs(math.sin(math.radians(torso_angle))))
-        except:
-            return 0.0
-    
-    def add_analysis_text(self, frame, analysis):
-        try:
-            # Add analysis text to the frame
-            text_color = (0, 255, 0) if analysis['form_quality'] > 70 else (0, 165, 255) if analysis['form_quality'] > 50 else (0, 0, 255)
-            
-            cv2.putText(frame, f"Reps: {analysis['reps']}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            cv2.putText(frame, f"State: {analysis['state']}", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            cv2.putText(frame, f"Form: {analysis['form_quality']:.1f}%", (10, 90), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            cv2.putText(frame, f"Load: {analysis['spinal_load']:.0f}N", (10, 120), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            cv2.putText(frame, f"Conf: {analysis['confidence']:.1%}", (10, 150), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-        except Exception as e:
-            logger.error(f"Error adding text to frame: {e}")
-    
-    def get_stats(self):
-        return {
-            'total_frames': self.frame_count,
-            'total_reps': self.rep_detector.rep_count,
-            'current_state': self.rep_detector.state,
-            'session_duration': time.time() - self.last_analysis_time
-        }
+            logger.error(f"Angle calculation error: {e}")
+            return {}
 
-class DeadliftRepDetector:
+    def angle_between_points(self, a, b, c):
+        """More robust angle calculation"""
+        try:
+            ba = np.array([a[0]-b[0], a[1]-b[1]])
+            bc = np.array([c[0]-b[0], c[1]-b[1]])
+
+            dot_product = np.dot(ba, bc)
+            mag_ba = np.linalg.norm(ba)
+            mag_bc = np.linalg.norm(bc)
+
+            if mag_ba == 0 or mag_bc == 0:
+                return 0.0
+
+            cos_angle = dot_product / (mag_ba * mag_bc)
+            cos_angle = np.clip(cos_angle, -1.0, 1.0)
+
+            angle_rad = np.arccos(cos_angle)
+            return np.degrees(angle_rad)
+        except:
+            return 0.0
+
+    def calculate_spinal_loading(self, back_angle, barbell_weight):
+        """More accurate spinal loading calculation"""
+        try:
+            back_angle_rad = np.radians(back_angle)
+            shear_force = barbell_weight * np.sin(back_angle_rad)
+            compression_force = barbell_weight * np.cos(back_angle_rad)
+            body_compression = self.body_weight * 0.6
+            total_compression = compression_force + body_compression
+
+            return {
+                'total_compression': total_compression,
+                'shear_force': shear_force,
+                'compression_force': compression_force
+            }
+        except:
+            return {'total_compression': 0, 'shear_force': 0, 'compression_force': 0}
+
+class AdvancedDeadliftRepDetector:
+    """Enhanced rep detection with adaptive thresholds"""
     def __init__(self):
         self.state = "STANDING"
         self.rep_count = 0
-        self.last_hip_y = None
-        
-    def update(self, hip_y, torso_angle, hip_angle, knee_angle):
-        if self.last_hip_y is None:
-            self.last_hip_y = hip_y
+        self.rep_start_time = None
+        self.last_state_change = time.time()
+        self.state_persistence_time = 0.3
+        self.hip_height_history = deque(maxlen=30)
+        self.adaptive_thresholds = {
+            'standing_hip_height': 0.3,
+            'bottom_hip_height': 0.7
+        }
+
+    def update_adaptive_thresholds(self, current_hip_height):
+        """Update thresholds based on recent movement"""
+        self.hip_height_history.append(current_hip_height)
+
+        if len(self.hip_height_history) > 10:
+            min_hip = min(self.hip_height_history)
+            max_hip = max(self.hip_height_history)
+            range_hip = max_hip - min_hip
+
+            if range_hip > 0.1:
+                self.adaptive_thresholds['standing_hip_height'] = min_hip + range_hip * 0.2
+                self.adaptive_thresholds['bottom_hip_height'] = min_hip + range_hip * 0.8
+
+    def detect_rep_state(self, landmarks, angles, timestamp):
+        """Enhanced rep detection with multiple criteria"""
+        if not landmarks or not angles:
             return False, self.state
-        
-        hip_moving_down = hip_y > self.last_hip_y + 0.01
-        hip_moving_up = hip_y < self.last_hip_y - 0.01
-        
-        if self.state == "STANDING" and torso_angle < 150 and hip_moving_down:
-            self.state = "DESCENDING"
-        elif self.state == "DESCENDING" and torso_angle < 100:
-            self.state = "BOTTOM"
-        elif self.state == "BOTTOM" and hip_moving_up:
-            self.state = "ASCENDING"
-        elif self.state == "ASCENDING" and torso_angle > 150:
-            self.state = "STANDING"
-            self.rep_count += 1
-            self.last_hip_y = hip_y
-            return True, self.state
-        
-        self.last_hip_y = hip_y
-        return False, self.state
 
-# Helper functions
-def angle_with_vertical(dx, dy):
+        hip_y = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y
+        self.update_adaptive_thresholds(hip_y)
+
+        if timestamp - self.last_state_change < self.state_persistence_time:
+            return False, self.state
+
+        back_angle = angles.get('back_angle', 0)
+        hip_angle = angles.get('hip_angle', 0)
+        knee_angle = angles.get('knee_angle', 0)
+
+        new_state = self.state
+        rep_completed = False
+
+        if self.state == "STANDING":
+            if back_angle > 45 and hip_y > self.adaptive_thresholds['standing_hip_height'] and hip_angle > 150:
+                new_state = "DESCENDING"
+                self.rep_start_time = timestamp
+
+        elif self.state == "DESCENDING":
+            if hip_y >= self.adaptive_thresholds['bottom_hip_height'] and knee_angle < 100 and back_angle > 70:
+                new_state = "BOTTOM"
+
+        elif self.state == "BOTTOM":
+            if hip_y < self.adaptive_thresholds['bottom_hip_height'] - 0.05:
+                new_state = "ASCENDING"
+
+        elif self.state == "ASCENDING":
+            if hip_y <= self.adaptive_thresholds['standing_hip_height'] and back_angle < 30 and hip_angle > 160:
+                new_state = "STANDING"
+                self.rep_count += 1
+                rep_completed = True
+
+        if new_state != self.state:
+            self.state = new_state
+            self.last_state_change = timestamp
+
+        return rep_completed, self.state
+
+class FormQualityAnalyzer:
+    """Comprehensive form quality assessment"""
+    def __init__(self):
+        self.ideal_ranges = {
+            'back_angle_start': (15, 30),
+            'hip_height_relative': (0.4, 0.6),
+            'knee_angle_start': (140, 160),
+            'symmetry_threshold': 0.9
+        }
+
+    def calculate_comprehensive_quality(self, landmarks, angles, reference_points):
+        """Calculate form quality using multiple factors"""
+        quality_factors = {}
+
+        back_angle = angles.get('back_angle', 0)
+        ideal_back = (self.ideal_ranges['back_angle_start'][0] + self.ideal_ranges['back_angle_start'][1]) / 2
+        back_quality = 100 - min(100, abs(back_angle - ideal_back) / ideal_back * 100)
+        quality_factors['back_angle'] = max(0, back_quality)
+
+        hip_alignment = self.assess_hip_alignment(landmarks, reference_points)
+        quality_factors['hip_position'] = hip_alignment
+
+        symmetry_quality = self.assess_symmetry(landmarks)
+        quality_factors['symmetry'] = symmetry_quality
+
+        weights = {
+            'back_angle': 0.4,
+            'hip_position': 0.35,
+            'symmetry': 0.25
+        }
+
+        overall_quality = sum(quality_factors[factor] * weights[factor] for factor in quality_factors)
+
+        return {
+            'overall': max(0, min(100, overall_quality)),
+            'factors': quality_factors
+        }
+
+    def assess_hip_alignment(self, landmarks, reference_points):
+        """Check hip alignment with reference"""
+        try:
+            hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
+            vx = reference_points.get('vertical_line_x', 320)
+            hip_x = hip.x * 640
+
+            deviation = abs(hip_x - vx)
+            max_deviation = 100
+            alignment_quality = 100 - min(100, (deviation / max_deviation) * 100)
+            return max(0, alignment_quality)
+        except:
+            return 50.0
+
+    def assess_symmetry(self, landmarks):
+        """Check left-right symmetry"""
+        try:
+            left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
+            right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+
+            hip_height_diff = abs(left_hip.y - right_hip.y)
+            shoulder_height_diff = abs(left_shoulder.y - right_shoulder.y)
+
+            max_diff = 0.05
+            hip_symmetry = 100 - min(100, (hip_height_diff / max_diff) * 100)
+            shoulder_symmetry = 100 - min(100, (shoulder_height_diff / max_diff) * 100)
+
+            return max(0, (hip_symmetry + shoulder_symmetry) / 2)
+        except:
+            return 50.0
+
+def calculate_landmark_confidence(landmarks, required_landmarks):
+    """Calculate confidence score for pose detection"""
+    confidence = 0.0
+    visible_count = 0
+
+    for idx in required_landmarks:
+        if idx < len(landmarks) and landmarks[idx].visibility > 0.7:
+            confidence += landmarks[idx].visibility
+            visible_count += 1
+
+    return confidence / len(required_landmarks) if visible_count > 0 else 0.0
+
+def create_mirrored_landmarks(original_landmarks):
+    """Create a list of mirrored landmarks by flipping x coordinates"""
     try:
-        dot = dx * 0 + dy * (-1)
-        mag_v = math.hypot(dx, dy)
-        if mag_v == 0:
-            return 0.0
-        cos_a = max(min(dot / mag_v, 1), -1)
-        return math.degrees(math.acos(cos_a))
+        mirrored_landmarks = []
+        for landmark in original_landmarks:
+            mirrored_landmark = type(landmark)()
+            mirrored_landmark.x = 1.0 - landmark.x
+            mirrored_landmark.y = landmark.y
+            mirrored_landmark.z = landmark.z
+            mirrored_landmark.visibility = landmark.visibility
+            mirrored_landmarks.append(mirrored_landmark)
+        return mirrored_landmarks
     except:
-        return 0.0  # Fixed indentation here
+        return []
 
-def angle_between_points(a, b, c):
+def draw_mesh_skeleton(image, landmarks):
+    """Draw enhanced mesh-style skeleton visualization"""
+    if not landmarks:
+        return
+
     try:
-        ba = a - b
-        bc = c - b
-        cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
-        cos_angle = max(min(cos_angle, 1), -1)
-        return math.degrees(np.arccos(cos_angle))
+        h, w, _ = image.shape
+
+        # Define pose connections with colors
+        connection_colors = {
+            'torso': (0, 255, 255),      # Cyan
+            'left_arm': (255, 100, 100),  # Light red
+            'right_arm': (100, 255, 100), # Light green
+            'left_leg': (255, 200, 0),    # Orange
+            'right_leg': (200, 100, 255)  # Purple
+        }
+
+        # Group connections by body part
+        torso_connections = [
+            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
+            (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
+            (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP)
+        ]
+
+        left_arm_connections = [
+            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
+            (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST)
+        ]
+
+        right_arm_connections = [
+            (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
+            (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST)
+        ]
+
+        left_leg_connections = [
+            (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
+            (mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
+            (mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.LEFT_FOOT_INDEX)
+        ]
+
+        right_leg_connections = [
+            (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
+            (mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
+            (mp_pose.PoseLandmark.RIGHT_ANKLE, mp_pose.PoseLandmark.RIGHT_FOOT_INDEX)
+        ]
+
+        # Draw connections with gradient effect
+        def draw_connection_group(connections, color, thickness=4):
+            for start_lm, end_lm in connections:
+                start_idx = start_lm.value
+                end_idx = end_lm.value
+
+                if start_idx >= len(landmarks) or end_idx >= len(landmarks):
+                    continue
+
+                start = landmarks[start_idx]
+                end = landmarks[end_idx]
+
+                if start.visibility < 0.5 or end.visibility < 0.5:
+                    continue
+
+                start_px = (int(start.x * w), int(start.y * h))
+                end_px = (int(end.x * w), int(end.y * h))
+
+                # Draw thick glowing line
+                cv2.line(image, start_px, end_px, color, thickness + 2, cv2.LINE_AA)
+                cv2.line(image, start_px, end_px, (255, 255, 255), thickness, cv2.LINE_AA)
+
+        # Draw all connection groups
+        draw_connection_group(torso_connections, connection_colors['torso'], 5)
+        draw_connection_group(left_arm_connections, connection_colors['left_arm'], 4)
+        draw_connection_group(right_arm_connections, connection_colors['right_arm'], 4)
+        draw_connection_group(left_leg_connections, connection_colors['left_leg'], 5)
+        draw_connection_group(right_leg_connections, connection_colors['right_leg'], 5)
+
+        # Draw joint points with glow effect
+        for i, landmark in enumerate(landmarks):
+            if landmark.visibility < 0.5:
+                continue
+
+            px = (int(landmark.x * w), int(landmark.y * h))
+
+            # Determine joint color based on importance
+            if i in [mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_SHOULDER.value,
+                     mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value]:
+                joint_color = (0, 255, 255)  # Cyan for key joints
+                radius = 8
+            elif i in [mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.RIGHT_KNEE.value]:
+                joint_color = (255, 255, 0)  # Yellow for knees
+                radius = 7
+            else:
+                joint_color = (100, 255, 100)  # Light green for other joints
+                radius = 5
+
+            # Glow effect
+            cv2.circle(image, px, radius + 3, joint_color, 2, cv2.LINE_AA)
+            cv2.circle(image, px, radius, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(image, px, radius - 2, joint_color, -1, cv2.LINE_AA)
+
+    except Exception as e:
+        logger.error(f"Error drawing mesh skeleton: {e}")
+
+def calculate_deadlift_reference_points(ankle_px, knee_px, shoulder_px, hip_px, frame_height):
+    """Calculate reference points for form analysis"""
+    try:
+        mid_foot_x = ankle_px[0]
+        knee_height = knee_px[1]
+        shoulder_height = shoulder_px[1]
+        optimal_hip_height = knee_height + (shoulder_height - knee_height) * 0.6
+
+        return {
+            'vertical_line_x': mid_foot_x,
+            'optimal_hip_height': optimal_hip_height,
+            'mid_foot': (mid_foot_x, ankle_px[1])
+        }
     except:
-        return 0.0
+        return {
+            'vertical_line_x': 320,
+            'optimal_hip_height': 240,
+            'mid_foot': (320, 400)
+        }
 
-# Global analysis instance
-analysis_engine = DeadliftAnalysis()
+def draw_reference_overlay(img, reference_points, hip_px, form_quality):
+    """Draw reference lines and form indicators"""
+    try:
+        vx = reference_points['vertical_line_x']
+        hip_y = int(reference_points['optimal_hip_height'])
 
-# HTML Routes
+        # Draw vertical bar path line
+        cv2.line(img, (vx, 0), (vx, img.shape[0]), (0, 255, 255), 2, cv2.LINE_AA)
+
+        # Draw horizontal hip reference line
+        cv2.line(img, (vx - 80, hip_y), (vx + 80, hip_y), (0, 255, 255), 2, cv2.LINE_AA)
+
+        # Draw reference crosshair
+        cv2.circle(img, (vx, hip_y), 60, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.circle(img, (vx, hip_y), 10, (0, 0, 255), -1, cv2.LINE_AA)
+
+        # Draw current hip position indicator
+        cv2.circle(img, hip_px, 12, (255, 50, 50), -1, cv2.LINE_AA)
+        cv2.circle(img, hip_px, 12, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Connection lines with transparency effect
+        cv2.line(img, hip_px, (vx, hip_px[1]), (255, 100, 100), 2, cv2.LINE_AA)
+
+        # Labels
+        cv2.putText(img, "BAR PATH", (vx + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(img, "IDEAL HIP", (vx + 15, hip_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # Mid-foot marker
+        cv2.circle(img, reference_points['mid_foot'], 8, (0, 255, 0), -1, cv2.LINE_AA)
+
+    except Exception as e:
+        logger.error(f"Error drawing reference overlay: {e}")
+
+def draw_trajectories(img, trajectories):
+    """Draw motion trajectories for key joints"""
+    colors = {
+        'hip': (0, 255, 255),
+        'shoulder': (255, 255, 0),
+        'knee': (255, 0, 255),
+        'ankle': (0, 255, 0)
+    }
+
+    for landmark_name, points in trajectories.items():
+        if len(points) > 1:
+            color = colors.get(landmark_name, (255, 255, 255))
+
+            # Draw trajectory path with fade effect
+            for i in range(1, len(points)):
+                alpha = i / len(points)
+                thickness = max(1, int(3 * alpha))
+                cv2.line(img, points[i-1], points[i], color, thickness, cv2.LINE_AA)
+
+            # Draw current position
+            if points:
+                cv2.circle(img, points[-1], 8, color, -1, cv2.LINE_AA)
+                cv2.circle(img, points[-1], 10, (255, 255, 255), 2, cv2.LINE_AA)
+
+def draw_hud_overlay(img, analysis_data):
+    """Draw heads-up display with metrics"""
+    try:
+        h, w = img.shape[:2]
+
+        # Semi-transparent background for HUD
+        overlay = img.copy()
+        cv2.rectangle(overlay, (10, 10), (250, 160), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+
+        # Display metrics
+        y_offset = 35
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # Rep count (large)
+        cv2.putText(img, f"REPS: {analysis_data['reps']}", (20, y_offset),
+                    font, 1.0, (0, 255, 0), 3, cv2.LINE_AA)
+        y_offset += 35
+
+        # State
+        state_color = (255, 255, 0) if analysis_data['state'] != "STANDING" else (0, 255, 0)
+        cv2.putText(img, f"State: {analysis_data['state']}", (20, y_offset),
+                    font, 0.6, state_color, 2, cv2.LINE_AA)
+        y_offset += 30
+
+        # Form quality bar
+        form_quality = analysis_data['form_quality']
+        if form_quality > 80:
+            quality_color = (0, 255, 0)
+        elif form_quality > 60:
+            quality_color = (0, 255, 255)
+        else:
+            quality_color = (0, 0, 255)
+
+        cv2.putText(img, f"Form: {form_quality:.0f}%", (20, y_offset),
+                    font, 0.6, quality_color, 2, cv2.LINE_AA)
+
+        # Form quality progress bar
+        bar_x, bar_y = 20, y_offset + 10
+        bar_width = 210
+        bar_height = 15
+        cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (50, 50, 50), -1)
+        cv2.rectangle(img, (bar_x, bar_y), (bar_x + int(bar_width * form_quality / 100), bar_y + bar_height),
+                     quality_color, -1)
+        cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (255, 255, 255), 2)
+
+        # Confidence indicator (bottom right)
+        if 'confidence' in analysis_data:
+            conf_text = f"Confidence: {analysis_data['confidence']:.0%}"
+            cv2.putText(img, conf_text, (w - 200, h - 20), font, 0.5, (100, 255, 100), 1, cv2.LINE_AA)
+
+    except Exception as e:
+        logger.error(f"Error drawing HUD overlay: {e}")
+
+class VideoProcessor:
+    """Process video frames and perform pose analysis"""
+    def __init__(self, connection_id):
+        self.connection_id = connection_id
+        self.pose_filter = PoseStabilityFilter()
+        self.advanced_analyzer = AdvancedBiomechanicalAnalyzer()
+        self.form_analyzer = FormQualityAnalyzer()
+        self.advanced_rep_detector = AdvancedDeadliftRepDetector()
+        
+        self.trajectories = {
+            'hip': deque(maxlen=50),
+            'shoulder': deque(maxlen=50),
+            'knee': deque(maxlen=50),
+            'ankle': deque(maxlen=50)
+        }
+        
+        self.pose_instance = create_pose_instance()
+        self.is_processing = True
+
+    def process_frame(self, frame):
+        """Process a single frame and return analysis results"""
+        try:
+            # Resize frame for consistent processing
+            frame = cv2.resize(frame, (640, 480))
+            
+            # Create black canvas for mesh visualization
+            annotated_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pose_results = self.pose_instance.process(rgb_frame)
+
+            analysis_data = {
+                'pose_detected': False,
+                'reps': self.advanced_rep_detector.rep_count,
+                'state': self.advanced_rep_detector.state,
+                'form_quality': 0,
+                'spinal_load': 0,
+                'confidence': 0,
+                'timestamp': time.time()
+            }
+
+            if pose_results.pose_landmarks:
+                mirrored_landmarks = create_mirrored_landmarks(pose_results.pose_landmarks)
+
+                if mirrored_landmarks:
+                    smoothed_landmarks = self.pose_filter.smooth_landmarks(mirrored_landmarks)
+
+                    required_landmarks = [
+                        mp_pose.PoseLandmark.LEFT_SHOULDER.value,
+                        mp_pose.PoseLandmark.LEFT_HIP.value,
+                        mp_pose.PoseLandmark.LEFT_KNEE.value,
+                        mp_pose.PoseLandmark.LEFT_ANKLE.value,
+                        mp_pose.PoseLandmark.RIGHT_SHOULDER.value,
+                        mp_pose.PoseLandmark.RIGHT_HIP.value
+                    ]
+
+                    confidence = calculate_landmark_confidence(smoothed_landmarks, required_landmarks)
+                    analysis_data['confidence'] = confidence
+
+                    if confidence >= 0.6:
+                        analysis_data['pose_detected'] = True
+
+                        # Draw mesh skeleton
+                        draw_mesh_skeleton(annotated_frame, smoothed_landmarks)
+
+                        # Calculate angles
+                        angles = self.advanced_analyzer.calculate_joint_angles(smoothed_landmarks, 640, 480)
+
+                        # Get key point positions
+                        def lm_to_pixel(lm):
+                            return (int(lm.x * 640), int(lm.y * 480))
+
+                        hip_px = lm_to_pixel(smoothed_landmarks[mp_pose.PoseLandmark.LEFT_HIP.value])
+                        knee_px = lm_to_pixel(smoothed_landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value])
+                        ankle_px = lm_to_pixel(smoothed_landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value])
+                        shoulder_px = lm_to_pixel(smoothed_landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value])
+
+                        # Update trajectories
+                        self.trajectories['hip'].append(hip_px)
+                        self.trajectories['shoulder'].append(shoulder_px)
+                        self.trajectories['knee'].append(knee_px)
+                        self.trajectories['ankle'].append(ankle_px)
+
+                        # Calculate reference points
+                        reference_points = calculate_deadlift_reference_points(ankle_px, knee_px, shoulder_px, hip_px, 480)
+
+                        # Form quality analysis
+                        form_analysis = self.form_analyzer.calculate_comprehensive_quality(smoothed_landmarks, angles, reference_points)
+                        analysis_data['form_quality'] = form_analysis['overall']
+
+                        # Rep detection
+                        rep_completed, current_state = self.advanced_rep_detector.detect_rep_state(
+                            smoothed_landmarks, angles, time.time()
+                        )
+
+                        analysis_data['reps'] = self.advanced_rep_detector.rep_count
+                        analysis_data['state'] = current_state
+
+                        # Spinal loading
+                        if angles.get('back_angle'):
+                            spinal_forces = self.advanced_analyzer.calculate_spinal_loading(
+                                angles['back_angle'], self.advanced_analyzer.barbell_weight
+                            )
+                            analysis_data['spinal_load'] = spinal_forces['total_compression']
+
+                        # Draw overlays
+                        draw_trajectories(annotated_frame, self.trajectories)
+                        draw_reference_overlay(annotated_frame, reference_points, hip_px, form_analysis['overall'])
+                        draw_hud_overlay(annotated_frame, analysis_data)
+
+            # Encode annotated frame
+            _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            img_base64 = base64.b64encode(buffer).decode('utf-8')
+            analysis_data['annotated_frame'] = f"data:image/jpeg;base64,{img_base64}"
+
+            return analysis_data
+
+        except Exception as e:
+            logger.error(f"Error processing frame: {str(e)}")
+            return None
+
+    def stop_processing(self):
+        """Clean up resources"""
+        self.is_processing = False
+        try:
+            self.pose_instance.close()
+        except:
+            pass
+
+# WebRTC Connection Handler
+class WebRTCConnection:
+    def __init__(self, connection_id):
+        self.connection_id = connection_id
+        self.pc = RTCPeerConnection()
+        self.video_processor = VideoProcessor(connection_id)
+        self.setup_connection()
+
+    def setup_connection(self):
+        """Set up WebRTC connection with video track"""
+        @self.pc.on("track")
+        def on_track(track):
+            logger.info(f"Track {track.kind} received")
+            
+            if track.kind == "video":
+                # Process video frames
+                asyncio.ensure_future(self.handle_video_track(track))
+
+        @self.pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            logger.info(f"Connection state is {self.pc.connectionState}")
+            if self.pc.connectionState == "failed" or self.pc.connectionState == "closed":
+                await self.cleanup()
+
+    async def handle_video_track(self, track):
+        """Handle incoming video track and process frames"""
+        logger.info("Starting video frame processing")
+        
+        while True:
+            try:
+                frame = await track.recv()
+                
+                # Convert frame to OpenCV format
+                img = frame.to_ndarray(format="bgr24")
+                
+                # Process frame
+                analysis_data = self.video_processor.process_frame(img)
+                
+                if analysis_data:
+                    # Send analysis results via WebSocket
+                    await socketio.emit('analysis_update', {
+                        'connection_id': self.connection_id,
+                        'data': analysis_data
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Error processing video frame: {e}")
+                break
+
+    async def cleanup(self):
+        """Clean up connection resources"""
+        self.video_processor.stop_processing()
+        await self.pc.close()
+        if self.connection_id in active_connections:
+            del active_connections[self.connection_id]
+
+# WebSocket event handlers
+@socketio.on('connect')
+def handle_connect():
+    logger.info(f"Client connected: {request.sid}")
+    emit('connected', {'message': 'Connected to deadlift analysis server'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    logger.info(f"Client disconnected: {request.sid}")
+    # Clean up any active connections for this client
+
+@socketio.on('start_analysis')
+def handle_start_analysis(data):
+    """Start analysis session"""
+    connection_id = data.get('connection_id', str(uuid.uuid4()))
+    
+    # Create new WebRTC connection
+    webrtc_conn = WebRTCConnection(connection_id)
+    active_connections[connection_id] = webrtc_conn
+    
+    emit('analysis_started', {
+        'connection_id': connection_id,
+        'message': 'Analysis session started'
+    })
+
+@socketio.on('stop_analysis')
+def handle_stop_analysis(data):
+    """Stop analysis session"""
+    connection_id = data.get('connection_id')
+    
+    if connection_id in active_connections:
+        asyncio.ensure_future(active_connections[connection_id].cleanup())
+        emit('analysis_stopped', {
+            'connection_id': connection_id,
+            'message': 'Analysis session stopped'
+        })
+    else:
+        emit('error', {'message': 'Connection not found'})
+
+@socketio.on('webrtc_offer')
+async def handle_webrtc_offer(data):
+    """Handle WebRTC offer from client"""
+    try:
+        connection_id = data.get('connection_id')
+        offer = data.get('offer')
+        
+        if connection_id not in active_connections:
+            emit('error', {'message': 'Connection not found'})
+            return
+        
+        webrtc_conn = active_connections[connection_id]
+        
+        # Set remote description
+        await webrtc_conn.pc.setRemoteDescription(
+            RTCSessionDescription(sdp=offer['sdp'], type=offer['type'])
+        )
+        
+        # Create answer
+        answer = await webrtc_conn.pc.createAnswer()
+        await webrtc_conn.pc.setLocalDescription(answer)
+        
+        # Send answer back to client
+        emit('webrtc_answer', {
+            'connection_id': connection_id,
+            'answer': {
+                'sdp': webrtc_conn.pc.localDescription.sdp,
+                'type': webrtc_conn.pc.localDescription.type
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error handling WebRTC offer: {e}")
+        emit('error', {'message': f'WebRTC error: {str(e)}'})
+
 @app.route('/')
 def index():
-    """Main web interface"""
-    stats = analysis_engine.get_stats()
-    return render_template('index.html', 
-                         total_reps=stats['total_reps'],
-                         total_frames=stats['total_frames'],
-                         current_state=stats['current_state'])
+    return jsonify({
+        'message': 'Advanced Deadlift Analysis API with WebRTC',
+        'status': 'ready',
+        'version': '3.0',
+        'features': [
+            'WebRTC real-time video streaming',
+            'Mesh skeleton visualization',
+            'Adaptive rep detection',
+            'Multi-factor form analysis',
+            'Real-time biomechanics',
+            'Motion trajectories'
+        ],
+        'endpoints': {
+            'WebSocket /': 'Real-time communication',
+            'GET /health': 'Health check'
+        }
+    })
 
-@app.route('/dashboard')
-def dashboard():
-    """Advanced dashboard"""
-    stats = analysis_engine.get_stats()
-    recent_analysis = list(analysis_engine.analysis_history)[-10:]  # Last 10 analyses
-    return render_template('dashboard.html',
-                         stats=stats,
-                         recent_analysis=recent_analysis)
-
-@app.route('/api')
-def api_docs():
-    """API documentation page"""
-    return render_template('api_docs.html')
-
-# API Routes
-@app.route('/api/health', methods=['GET'])
-def health():
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
         'timestamp': time.time(),
-        'frames_processed': analysis_engine.frame_count,
-        'total_reps': analysis_engine.rep_detector.rep_count,
-        'current_state': analysis_engine.rep_detector.state
+        'active_connections': len(active_connections),
+        'service': 'deadlift-analysis-webrtc-api',
+        'version': '3.0'
     })
-
-@app.route('/api/reset', methods=['POST'])
-def reset_analysis():
-    analysis_engine.rep_detector = DeadliftRepDetector()
-    analysis_engine.analysis_history.clear()
-    return jsonify({
-        'message': 'Analysis reset successfully',
-        'timestamp': time.time()
-    })
-
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    stats = analysis_engine.get_stats()
-    return jsonify(stats)
-
-@app.route('/api/process_frame', methods=['POST'])
-def process_frame():
-    try:
-        start_time = time.time()
-        
-        # Parse JSON data
-        data = request.get_json()
-        if not data or 'frame' not in data:
-            return jsonify({'error': 'No frame data provided'}), 400
-        
-        # Decode base64 image
-        frame_data = data['frame']
-        if frame_data.startswith('data:image'):
-            frame_data = frame_data.split(',')[1]
-        
-        img_bytes = base64.b64decode(frame_data)
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is None:
-            return jsonify({'error': 'Could not decode image'}), 400
-        
-        # Process frame
-        result = analysis_engine.process_frame(frame)
-        
-        if result is None:
-            return jsonify({'error': 'Frame processing failed'}), 500
-        
-        # Add processing time
-        result['processing_time'] = time.time() - start_time
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error in process_frame: {e}")
-        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    print("🚀 Starting Deadlift Analysis Server...")
-    print("📊 Web Interface: http://localhost:5005")
-    print("🔗 API Endpoint: http://localhost:5005/api/process_frame")
-    print("❤️  Health Check: http://localhost:5005/api/health")
-    app.run(host='0.0.0.0', port=5005, debug=True)
+    port = int(os.environ.get('PORT', 5005))
+    print("=" * 60)
+    print("🏋️  ADVANCED DEADLIFT ANALYSIS API v3.0 (WebRTC)")
+    print("=" * 60)
+    print(f"🚀 Server starting on port {port}")
+    print(f"📡 WebSocket ready for real-time communication")
+    print(f"🎨 Features: WebRTC streaming, mesh visualization, real-time analysis")
+    print("=" * 60)
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
